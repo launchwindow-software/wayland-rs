@@ -3,9 +3,9 @@ use proc_macro2::{Ident, Span, TokenStream};
 use quote::{format_ident, quote};
 
 use crate::{
-    Side,
     protocol::{Interface, Protocol, Type},
-    util::{description_to_doc_attr, enum_relname, is_keyword, snake_to_camel, to_doc_attr},
+    util::{description_to_doc_attr, dotted_to_relname, is_keyword, snake_to_camel, to_doc_attr},
+    Side,
 };
 
 pub fn generate_client_objects(protocol: &Protocol) -> TokenStream {
@@ -58,7 +58,7 @@ fn generate_objects_for(interface: &Interface) -> TokenStream {
             use super::wayland_client::{
                 backend::{
                     Backend, WeakBackend, smallvec, ObjectData, ObjectId, InvalidId,
-                    protocol::{Argument, Message, Interface, same_interface}
+                    protocol::{WEnum, Argument, Message, Interface, same_interface}
                 },
                 QueueProxyData, Proxy, Connection, Dispatch, QueueHandle, DispatchError, Weak,
             };
@@ -122,12 +122,30 @@ fn generate_objects_for(interface: &Interface) -> TokenStream {
                     self.version
                 }
 
+                #[inline]
+                fn data<U: Send + Sync + 'static>(&self) -> Option<&U> {
+                    self.data.as_ref().and_then(|arc| arc.data_as_any().downcast_ref::<U>())
+                }
+
                 fn object_data(&self) -> Option<&Arc<dyn ObjectData>> {
                     self.data.as_ref()
                 }
 
                 fn backend(&self) -> &WeakBackend {
                     &self.backend
+                }
+
+                fn send_request(&self, req: Self::Request<'_>) -> Result<(), InvalidId> {
+                    let conn = Connection::from_backend(self.backend.upgrade().ok_or(InvalidId)?);
+                    let id = conn.send_request(self, req, None)?;
+                    debug_assert!(id.is_null());
+                    Ok(())
+                }
+
+                fn send_constructor<I: Proxy>(&self, req: Self::Request<'_>, data: Arc<dyn ObjectData>) -> Result<I, InvalidId> {
+                    let conn = Connection::from_backend(self.backend.upgrade().ok_or(InvalidId)?);
+                    let id = conn.send_request(self, req, Some(data))?;
+                    Proxy::from_id(&conn, id)
                 }
 
                 #[inline]
@@ -184,8 +202,8 @@ fn gen_methods(interface: &Interface) -> TokenStream {
 
             let arg_name = format_ident!("{}{}", if is_keyword(&arg.name) { "_" } else { "" }, arg.name);
 
-            let arg_type =  if let Some(enum_ref) = &arg.enum_ {
-                let enum_type = enum_relname(enum_ref);
+            let arg_type =  if let Some(ref enu) = arg.enum_ {
+                let enum_type = dotted_to_relname(enu);
                 quote! { #enum_type }
             } else {
                 match arg.typ {
@@ -215,7 +233,7 @@ fn gen_methods(interface: &Interface) -> TokenStream {
         let enum_args = request.args.iter().flat_map(|arg| {
             let arg_name = format_ident!("{}{}", if is_keyword(&arg.name) { "_" } else { "" }, arg.name);
             if arg.enum_.is_some() {
-                Some(quote! { #arg_name: #arg_name })
+                Some(quote! { #arg_name: WEnum::Value(#arg_name) })
             } else if arg.typ == Type::NewId {
                 if arg.interface.is_none() {
                     Some(quote! { #arg_name: (I::interface(), version) })
@@ -239,17 +257,14 @@ fn gen_methods(interface: &Interface) -> TokenStream {
             .map(description_to_doc_attr);
 
         match created_interface {
-            Some(Some(created_interface)) => {
+            Some(Some(ref created_interface)) => {
                 // a regular creating request
                 let created_iface_mod = Ident::new(created_interface, Span::call_site());
                 let created_iface_type = Ident::new(&snake_to_camel(created_interface), Span::call_site());
                 quote! {
                     #doc_attr
                     #[allow(clippy::too_many_arguments)]
-                    pub fn #method_name<U, D: 'static>(&self, #(#fn_args,)* qh: &QueueHandle<D>, udata: U) -> super::#created_iface_mod::#created_iface_type
-                    where
-                        U: Dispatch<super::#created_iface_mod::#created_iface_type, D> + Send + Sync + 'static
-                    {
+                    pub fn #method_name<U: Send + Sync + 'static, D: Dispatch<super::#created_iface_mod::#created_iface_type, U> + 'static>(&self, #(#fn_args,)* qh: &QueueHandle<D>, udata: U) -> super::#created_iface_mod::#created_iface_type {
                         self.send_constructor(
                             Request::#enum_variant {
                                 #(#enum_args),*
@@ -264,10 +279,7 @@ fn gen_methods(interface: &Interface) -> TokenStream {
                 quote! {
                     #doc_attr
                     #[allow(clippy::too_many_arguments)]
-                    pub fn #method_name<I: Proxy + 'static, U, D: 'static>(&self, #(#fn_args,)* qh: &QueueHandle<D>, udata: U) -> I
-                    where
-                        U: Dispatch<I, D> + Send + Sync + 'static
-                    {
+                    pub fn #method_name<I: Proxy + 'static, U: Send + Sync + 'static, D: Dispatch<I, U> + 'static>(&self, #(#fn_args,)* qh: &QueueHandle<D>, udata: U) -> I {
                         self.send_constructor(
                             Request::#enum_variant {
                                 #(#enum_args),*
@@ -311,11 +323,6 @@ mod tests {
         let protocol_parsed = crate::parse::parse(protocol_file);
         let generated: String = super::generate_client_objects(&protocol_parsed).to_string();
         let generated = crate::format_rust_code(&generated);
-
-        if std::env::var("WAYLAND_SCANNER_UPDATE_TESTS").is_ok() {
-            std::fs::write("./tests/scanner_assets/test-client-code.rs", generated).unwrap();
-            return;
-        }
 
         let reference =
             std::fs::read_to_string("./tests/scanner_assets/test-client-code.rs").unwrap();

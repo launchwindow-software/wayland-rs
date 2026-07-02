@@ -3,9 +3,9 @@ use proc_macro2::{Ident, Span, TokenStream};
 use quote::{format_ident, quote};
 
 use crate::{
-    Side,
     protocol::{Interface, Protocol, Type},
-    util::{description_to_doc_attr, enum_relname, is_keyword, snake_to_camel, to_doc_attr},
+    util::{description_to_doc_attr, dotted_to_relname, is_keyword, snake_to_camel, to_doc_attr},
+    Side,
 };
 
 pub fn generate_server_objects(protocol: &Protocol) -> TokenStream {
@@ -67,7 +67,7 @@ fn generate_objects_for(interface: &Interface) -> TokenStream {
             use super::wayland_server::{
                 backend::{
                     smallvec, ObjectData, ObjectId, InvalidId, WeakHandle,
-                    protocol::{Argument, Message, Interface, same_interface}
+                    protocol::{WEnum, Argument, Message, Interface, same_interface}
                 },
                 Resource, Dispatch, DisplayHandle, DispatchError, ResourceData, New, Weak,
             };
@@ -136,6 +136,11 @@ fn generate_objects_for(interface: &Interface) -> TokenStream {
                 }
 
                 #[inline]
+                fn data<U: 'static>(&self) -> Option<&U> {
+                    self.data.as_ref().and_then(|arc| (&**arc).downcast_ref::<ResourceData<Self, U>>()).map(|data| &data.udata)
+                }
+
+                #[inline]
                 fn object_data(&self) -> Option<&Arc<dyn std::any::Any + Send + Sync>> {
                     self.data.as_ref()
                 }
@@ -152,6 +157,11 @@ fn generate_objects_for(interface: &Interface) -> TokenStream {
                     let version = conn.object_info(id.clone()).map(|info| info.version).unwrap_or(0);
                     let data = conn.get_object_data(id.clone()).ok();
                     Ok(#iface_name { id, data, version, handle: conn.backend_handle().downgrade() })
+                }
+
+                fn send_event(&self, evt: Self::Event<'_>) -> Result<(), InvalidId> {
+                    let handle = DisplayHandle::from(self.handle.upgrade().ok_or(InvalidId)?);
+                    handle.send_event(self, evt)
                 }
 
                 fn parse_request(conn: &DisplayHandle, msg: Message<ObjectId, OwnedFd>) -> Result<(Self, Self::Request), DispatchError> {
@@ -190,8 +200,8 @@ fn gen_methods(interface: &Interface) -> TokenStream {
                 let arg_name =
                     format_ident!("{}{}", if is_keyword(&arg.name) { "_" } else { "" }, arg.name);
 
-                let arg_type = if let Some(enum_ref) = &arg.enum_ {
-                    let enum_type = enum_relname(enum_ref);
+                let arg_type = if let Some(ref enu) = arg.enum_ {
+                    let enum_type = dotted_to_relname(enu);
                     quote! { #enum_type }
                 } else {
                     match arg.typ {
@@ -236,7 +246,7 @@ fn gen_methods(interface: &Interface) -> TokenStream {
                 let arg_name =
                     format_ident!("{}{}", if is_keyword(&arg.name) { "_" } else { "" }, arg.name);
                 if arg.enum_.is_some() {
-                    Some(quote! { #arg_name: #arg_name })
+                    Some(quote! { #arg_name: WEnum::Value(#arg_name) })
                 } else if arg.typ == Type::Object || arg.typ == Type::NewId {
                     if arg.allow_null {
                         Some(quote! { #arg_name: #arg_name.cloned() })
@@ -274,11 +284,6 @@ mod tests {
         let protocol_parsed = crate::parse::parse(protocol_file);
         let generated: String = super::generate_server_objects(&protocol_parsed).to_string();
         let generated = crate::format_rust_code(&generated);
-
-        if std::env::var("WAYLAND_SCANNER_UPDATE_TESTS").is_ok() {
-            std::fs::write("./tests/scanner_assets/test-server-code.rs", generated).unwrap();
-            return;
-        }
 
         let reference =
             std::fs::read_to_string("./tests/scanner_assets/test-server-code.rs").unwrap();

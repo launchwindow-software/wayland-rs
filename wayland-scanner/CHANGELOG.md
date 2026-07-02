@@ -2,12 +2,6 @@
 
 ## Unreleased
 
-#### Breaking changes
-- Generate tuple struct for enums, and don't use `WEnum`
-
-#### Additions
-- Add `available_since()` method for enums
-
 ## 0.31.8 -- 2025-12-30
 
 - Update `quick-xml` to 0.38

@@ -5,8 +5,9 @@ use std::{
 };
 
 use quick_xml::{
+    events::{attributes::Attributes, Event},
     Reader,
-    events::{Event, attributes::Attributes},
+    XmlVersion,
 };
 
 pub fn parse<S: Read>(stream: S) -> Protocol {
@@ -22,10 +23,6 @@ fn decode_utf8_or_panic(txt: Vec<u8>) -> String {
         Ok(txt) => txt,
         Err(e) => panic!("Invalid UTF8: '{}'", String::from_utf8_lossy(&e.into_bytes())),
     }
-}
-
-fn parse_bool(txt: &[u8]) -> bool {
-    txt == b"true"
 }
 
 fn parse_or_panic<T: FromStr>(txt: &[u8]) -> T {
@@ -90,7 +87,7 @@ fn parse_protocol<R: BufRead>(mut reader: Reader<R>) -> Protocol {
                                 Ok(Event::GeneralRef(byte_ref)) => {
                                     if let Ok(Some(c)) = byte_ref.resolve_char_ref() {
                                         copyright.push(c);
-                                    } else if let Ok(content) = byte_ref.xml10_content() {
+                                    } else if let Ok(content) = byte_ref.xml_content(XmlVersion::default()) {
                                         if let Some(s) =
                                             quick_xml::escape::resolve_xml_entity(&content)
                                         {
@@ -198,20 +195,6 @@ fn parse_description<R: BufRead>(reader: &mut Reader<R>, attrs: Attributes) -> (
             }
             Ok(Event::End(bytes)) if bytes.name().into_inner() == b"description" => break,
             Ok(Event::Comment(_)) => {}
-            Ok(Event::GeneralRef(byte_ref)) => {
-                if let Ok(Some(c)) = byte_ref.resolve_char_ref() {
-                    description.push(c);
-                } else if let Ok(content) = byte_ref.xml10_content() {
-                    if let Some(s) = quick_xml::escape::resolve_xml_entity(&content) {
-                        description.push_str(s);
-                    }
-                }
-            }
-            Ok(Event::CData(cdata)) => {
-                if let Ok(cdata) = String::from_utf8(cdata.into_inner().into()) {
-                    description.push_str(&cdata);
-                }
-            }
             e => panic!("Ill-formed protocol file: {e:?}"),
         }
     }
@@ -253,7 +236,11 @@ fn parse_enum<R: BufRead>(reader: &mut Reader<R>, attrs: Attributes) -> Enum {
         match attr.key.into_inner() {
             b"name" => enu.name = decode_utf8_or_panic(attr.value.into_owned()),
             b"since" => enu.since = parse_or_panic(&attr.value),
-            b"bitfield" => enu.bitfield = parse_bool(&attr.value),
+            b"bitfield" => {
+                if &attr.value[..] == b"true" {
+                    enu.bitfield = true
+                }
+            }
             _ => {}
         }
     }
@@ -303,17 +290,6 @@ fn parse_event<R: BufRead>(reader: &mut Reader<R>, attrs: Attributes) -> Message
     event
 }
 
-fn parse_enum_relname_or_panic(txt: Vec<u8>) -> EnumRef {
-    let value = decode_utf8_or_panic(txt);
-    let mut iter = value.rsplit('.');
-    let name = iter.next().unwrap().to_string();
-    let interface = iter.next().map(|s| s.to_string());
-    if iter.next().is_some() {
-        panic!("Invalid relname: '{value}'")
-    }
-    EnumRef { interface, name }
-}
-
 fn parse_arg<R: BufRead>(reader: &mut Reader<R>, attrs: Attributes) -> Arg {
     let mut arg = Arg::new();
     for attr in attrs.filter_map(|res| res.ok()) {
@@ -329,8 +305,12 @@ fn parse_arg<R: BufRead>(reader: &mut Reader<R>, attrs: Attributes) -> Arg {
                 )
             }
             b"interface" => arg.interface = Some(parse_or_panic(&attr.value)),
-            b"allow-null" => arg.allow_null = parse_bool(&attr.value),
-            b"enum" => arg.enum_ = Some(parse_enum_relname_or_panic(attr.value.into_owned())),
+            b"allow-null" => {
+                if &*attr.value == b"true" {
+                    arg.allow_null = true
+                }
+            }
+            b"enum" => arg.enum_ = Some(decode_utf8_or_panic(attr.value.into_owned())),
             _ => {}
         }
     }

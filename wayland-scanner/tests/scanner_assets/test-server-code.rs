@@ -2,7 +2,7 @@
 pub mod wl_registry {
     use super::wayland_server::{
         backend::{
-            protocol::{same_interface, Argument, Interface, Message},
+            protocol::{same_interface, Argument, Interface, Message, WEnum},
             smallvec, InvalidId, ObjectData, ObjectId, WeakHandle,
         },
         Dispatch, DispatchError, DisplayHandle, New, Resource, ResourceData, Weak,
@@ -122,6 +122,13 @@ pub mod wl_registry {
             self.version
         }
         #[inline]
+        fn data<U: 'static>(&self) -> Option<&U> {
+            self.data
+                .as_ref()
+                .and_then(|arc| (&**arc).downcast_ref::<ResourceData<Self, U>>())
+                .map(|data| &data.udata)
+        }
+        #[inline]
         fn object_data(&self) -> Option<&Arc<dyn std::any::Any + Send + Sync>> {
             self.data.as_ref()
         }
@@ -136,6 +143,10 @@ pub mod wl_registry {
             let version = conn.object_info(id.clone()).map(|info| info.version).unwrap_or(0);
             let data = conn.get_object_data(id.clone()).ok();
             Ok(WlRegistry { id, data, version, handle: conn.backend_handle().downgrade() })
+        }
+        fn send_event(&self, evt: Self::Event<'_>) -> Result<(), InvalidId> {
+            let handle = DisplayHandle::from(self.handle.upgrade().ok_or(InvalidId)?);
+            handle.send_event(self, evt)
         }
         fn parse_request(
             conn: &DisplayHandle,
@@ -198,13 +209,13 @@ pub mod wl_registry {
 pub mod wl_callback {
     use super::wayland_server::{
         backend::{
-            protocol::{same_interface, Argument, Interface, Message},
+            protocol::{same_interface, Argument, Interface, Message, WEnum},
             smallvec, InvalidId, ObjectData, ObjectId, WeakHandle,
         },
         Dispatch, DispatchError, DisplayHandle, New, Resource, ResourceData, Weak,
     };
-    use std::os::unix::io::OwnedFd;
     use std::sync::Arc;
+    use std::os::unix::io::OwnedFd;
     #[doc = r" The minimal object version supporting this event"]
     pub const EVT_DONE_SINCE: u32 = 1u32;
     #[doc = r" The wire opcode for this event"]
@@ -290,6 +301,13 @@ pub mod wl_callback {
             self.version
         }
         #[inline]
+        fn data<U: 'static>(&self) -> Option<&U> {
+            self.data
+                .as_ref()
+                .and_then(|arc| (&**arc).downcast_ref::<ResourceData<Self, U>>())
+                .map(|data| &data.udata)
+        }
+        #[inline]
         fn object_data(&self) -> Option<&Arc<dyn std::any::Any + Send + Sync>> {
             self.data.as_ref()
         }
@@ -304,6 +322,10 @@ pub mod wl_callback {
             let version = conn.object_info(id.clone()).map(|info| info.version).unwrap_or(0);
             let data = conn.get_object_data(id.clone()).ok();
             Ok(WlCallback { id, data, version, handle: conn.backend_handle().downgrade() })
+        }
+        fn send_event(&self, evt: Self::Event<'_>) -> Result<(), InvalidId> {
+            let handle = DisplayHandle::from(self.handle.upgrade().ok_or(InvalidId)?);
+            handle.send_event(self, evt)
         }
         fn parse_request(
             conn: &DisplayHandle,
@@ -355,13 +377,13 @@ pub mod wl_callback {
 pub mod test_global {
     use super::wayland_server::{
         backend::{
-            protocol::{same_interface, Argument, Interface, Message},
+            protocol::{same_interface, Argument, Interface, Message, WEnum},
             smallvec, InvalidId, ObjectData, ObjectId, WeakHandle,
         },
         Dispatch, DispatchError, DisplayHandle, New, Resource, ResourceData, Weak,
     };
-    use std::os::unix::io::OwnedFd;
     use std::sync::Arc;
+    use std::os::unix::io::OwnedFd;
     #[doc = r" The minimal object version supporting this request"]
     pub const REQ_MANY_ARGS_SINCE: u32 = 1u32;
     #[doc = r" The wire opcode for this request"]
@@ -545,6 +567,13 @@ pub mod test_global {
             self.version
         }
         #[inline]
+        fn data<U: 'static>(&self) -> Option<&U> {
+            self.data
+                .as_ref()
+                .and_then(|arc| (&**arc).downcast_ref::<ResourceData<Self, U>>())
+                .map(|data| &data.udata)
+        }
+        #[inline]
         fn object_data(&self) -> Option<&Arc<dyn std::any::Any + Send + Sync>> {
             self.data.as_ref()
         }
@@ -559,6 +588,10 @@ pub mod test_global {
             let version = conn.object_info(id.clone()).map(|info| info.version).unwrap_or(0);
             let data = conn.get_object_data(id.clone()).ok();
             Ok(TestGlobal { id, data, version, handle: conn.backend_handle().downgrade() })
+        }
+        fn send_event(&self, evt: Self::Event<'_>) -> Result<(), InvalidId> {
+            let handle = DisplayHandle::from(self.handle.upgrade().ok_or(InvalidId)?);
+            handle.send_event(self, evt)
         }
         fn parse_request(
             conn: &DisplayHandle,
@@ -953,13 +986,13 @@ pub mod test_global {
 pub mod secondary {
     use super::wayland_server::{
         backend::{
-            protocol::{same_interface, Argument, Interface, Message},
+            protocol::{same_interface, Argument, Interface, Message, WEnum},
             smallvec, InvalidId, ObjectData, ObjectId, WeakHandle,
         },
         Dispatch, DispatchError, DisplayHandle, New, Resource, ResourceData, Weak,
     };
-    use std::os::unix::io::OwnedFd;
     use std::sync::Arc;
+    use std::os::unix::io::OwnedFd;
     #[doc = r" The minimal object version supporting this request"]
     pub const REQ_DESTROY_SINCE: u32 = 2u32;
     #[doc = r" The wire opcode for this request"]
@@ -1044,6 +1077,13 @@ pub mod secondary {
             self.version
         }
         #[inline]
+        fn data<U: 'static>(&self) -> Option<&U> {
+            self.data
+                .as_ref()
+                .and_then(|arc| (&**arc).downcast_ref::<ResourceData<Self, U>>())
+                .map(|data| &data.udata)
+        }
+        #[inline]
         fn object_data(&self) -> Option<&Arc<dyn std::any::Any + Send + Sync>> {
             self.data.as_ref()
         }
@@ -1058,6 +1098,10 @@ pub mod secondary {
             let version = conn.object_info(id.clone()).map(|info| info.version).unwrap_or(0);
             let data = conn.get_object_data(id.clone()).ok();
             Ok(Secondary { id, data, version, handle: conn.backend_handle().downgrade() })
+        }
+        fn send_event(&self, evt: Self::Event<'_>) -> Result<(), InvalidId> {
+            let handle = DisplayHandle::from(self.handle.upgrade().ok_or(InvalidId)?);
+            handle.send_event(self, evt)
         }
         fn parse_request(
             conn: &DisplayHandle,
@@ -1105,13 +1149,13 @@ pub mod secondary {
 pub mod tertiary {
     use super::wayland_server::{
         backend::{
-            protocol::{same_interface, Argument, Interface, Message},
+            protocol::{same_interface, Argument, Interface, Message, WEnum},
             smallvec, InvalidId, ObjectData, ObjectId, WeakHandle,
         },
         Dispatch, DispatchError, DisplayHandle, New, Resource, ResourceData, Weak,
     };
-    use std::os::unix::io::OwnedFd;
     use std::sync::Arc;
+    use std::os::unix::io::OwnedFd;
     #[doc = r" The minimal object version supporting this request"]
     pub const REQ_DESTROY_SINCE: u32 = 3u32;
     #[doc = r" The wire opcode for this request"]
@@ -1196,6 +1240,13 @@ pub mod tertiary {
             self.version
         }
         #[inline]
+        fn data<U: 'static>(&self) -> Option<&U> {
+            self.data
+                .as_ref()
+                .and_then(|arc| (&**arc).downcast_ref::<ResourceData<Self, U>>())
+                .map(|data| &data.udata)
+        }
+        #[inline]
         fn object_data(&self) -> Option<&Arc<dyn std::any::Any + Send + Sync>> {
             self.data.as_ref()
         }
@@ -1210,6 +1261,10 @@ pub mod tertiary {
             let version = conn.object_info(id.clone()).map(|info| info.version).unwrap_or(0);
             let data = conn.get_object_data(id.clone()).ok();
             Ok(Tertiary { id, data, version, handle: conn.backend_handle().downgrade() })
+        }
+        fn send_event(&self, evt: Self::Event<'_>) -> Result<(), InvalidId> {
+            let handle = DisplayHandle::from(self.handle.upgrade().ok_or(InvalidId)?);
+            handle.send_event(self, evt)
         }
         fn parse_request(
             conn: &DisplayHandle,
@@ -1257,13 +1312,13 @@ pub mod tertiary {
 pub mod quad {
     use super::wayland_server::{
         backend::{
-            protocol::{same_interface, Argument, Interface, Message},
+            protocol::{same_interface, Argument, Interface, Message, WEnum},
             smallvec, InvalidId, ObjectData, ObjectId, WeakHandle,
         },
         Dispatch, DispatchError, DisplayHandle, New, Resource, ResourceData, Weak,
     };
-    use std::os::unix::io::OwnedFd;
     use std::sync::Arc;
+    use std::os::unix::io::OwnedFd;
     #[doc = r" The minimal object version supporting this request"]
     pub const REQ_DESTROY_SINCE: u32 = 3u32;
     #[doc = r" The wire opcode for this request"]
@@ -1348,6 +1403,13 @@ pub mod quad {
             self.version
         }
         #[inline]
+        fn data<U: 'static>(&self) -> Option<&U> {
+            self.data
+                .as_ref()
+                .and_then(|arc| (&**arc).downcast_ref::<ResourceData<Self, U>>())
+                .map(|data| &data.udata)
+        }
+        #[inline]
         fn object_data(&self) -> Option<&Arc<dyn std::any::Any + Send + Sync>> {
             self.data.as_ref()
         }
@@ -1362,6 +1424,10 @@ pub mod quad {
             let version = conn.object_info(id.clone()).map(|info| info.version).unwrap_or(0);
             let data = conn.get_object_data(id.clone()).ok();
             Ok(Quad { id, data, version, handle: conn.backend_handle().downgrade() })
+        }
+        fn send_event(&self, evt: Self::Event<'_>) -> Result<(), InvalidId> {
+            let handle = DisplayHandle::from(self.handle.upgrade().ok_or(InvalidId)?);
+            handle.send_event(self, evt)
         }
         fn parse_request(
             conn: &DisplayHandle,

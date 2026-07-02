@@ -1,7 +1,5 @@
 use proc_macro2::{Ident, Span, TokenStream};
-use quote::{ToTokens, quote};
-
-use crate::protocol::EnumRef;
+use quote::{quote, ToTokens};
 
 pub(crate) fn to_doc_attr(text: &str) -> TokenStream {
     let text = text.lines().map(str::trim).collect::<Vec<_>>().join("\n");
@@ -94,15 +92,24 @@ pub fn snake_to_camel(input: &str) -> String {
         })
         .collect::<String>();
 
-    if is_camel_keyword(&result) { format!("_{}", &result) } else { result }
+    if is_camel_keyword(&result) {
+        format!("_{}", &result)
+    } else {
+        result
+    }
 }
 
-pub fn enum_relname(enum_ref: &EnumRef) -> TokenStream {
-    if let Some(interface) = &enum_ref.interface {
-        let module = Ident::new(interface, Span::call_site());
-        let ident = Ident::new(&snake_to_camel(&enum_ref.name), Span::call_site());
-        quote::quote!(super::#module::#ident)
-    } else {
-        Ident::new(&snake_to_camel(&enum_ref.name), Span::call_site()).into_token_stream()
+pub fn dotted_to_relname(input: &str) -> TokenStream {
+    let mut it = input.split('.');
+    match (it.next(), it.next()) {
+        (Some(module), Some(name)) => {
+            let module = Ident::new(module, Span::call_site());
+            let ident = Ident::new(&snake_to_camel(name), Span::call_site());
+            quote::quote!(super::#module::#ident)
+        }
+        (Some(name), None) => {
+            Ident::new(&snake_to_camel(name), Span::call_site()).into_token_stream()
+        }
+        _ => unreachable!(),
     }
 }

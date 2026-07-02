@@ -2,54 +2,26 @@
 pub mod wl_display {
     use super::wayland_client::{
         backend::{
-            protocol::{same_interface, Argument, Interface, Message},
+            protocol::{same_interface, Argument, Interface, Message, WEnum},
             smallvec, Backend, InvalidId, ObjectData, ObjectId, WeakBackend,
         },
         Connection, Dispatch, DispatchError, Proxy, QueueHandle, QueueProxyData, Weak,
     };
-    use std::os::unix::io::OwnedFd;
     use std::sync::Arc;
+    use std::os::unix::io::OwnedFd;
     #[doc = "global error values\n\nThese errors are global and can be emitted in response to any\nserver request."]
-    #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-    pub struct Error(pub u32);
-    impl Error {
+    #[repr(u32)]
+    #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    #[non_exhaustive]
+    pub enum Error {
         #[doc = "server couldn't find object"]
-        pub const InvalidObject: Self = Self(0);
+        InvalidObject = 0,
         #[doc = "method doesn't exist on the specified interface or malformed request"]
-        pub const InvalidMethod: Self = Self(1);
+        InvalidMethod = 1,
         #[doc = "server is out of memory"]
-        pub const NoMemory: Self = Self(2);
+        NoMemory = 2,
         #[doc = "implementation error in compositor"]
-        pub const Implementation: Self = Self(3);
-    }
-    impl std::fmt::Debug for Error {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            match *self {
-                Self::InvalidObject => write!(f, "{}", stringify!(InvalidObject)),
-                Self::InvalidMethod => write!(f, "{}", stringify!(InvalidMethod)),
-                Self::NoMemory => write!(f, "{}", stringify!(NoMemory)),
-                Self::Implementation => write!(f, "{}", stringify!(Implementation)),
-                Self(unknown) => write!(f, "{}({})", stringify!(Error), unknown),
-            }
-        }
-    }
-    impl Error {
-        #[doc(hidden)]
-        pub fn from_bits_retain(bits: u32) -> Self {
-            Error(bits)
-        }
-        #[doc = r" First protocol version enum variant is avilable in"]
-        #[doc = r""]
-        #[doc = r" `None` for unrecognized value."]
-        pub fn available_since(self) -> Option<u32> {
-            match self {
-                Self::InvalidObject => Some(1u32),
-                Self::InvalidMethod => Some(1u32),
-                Self::NoMemory => Some(1u32),
-                Self::Implementation => Some(1u32),
-                _ => None,
-            }
-        }
+        Implementation = 3,
     }
     impl std::convert::TryFrom<u32> for Error {
         type Error = ();
@@ -65,7 +37,7 @@ pub mod wl_display {
     }
     impl std::convert::From<Error> for u32 {
         fn from(val: Error) -> u32 {
-            val.0
+            val as u32
         }
     }
     #[doc = r" The minimal object version supporting this request"]
@@ -178,11 +150,30 @@ pub mod wl_display {
         fn version(&self) -> u32 {
             self.version
         }
+        #[inline]
+        fn data<U: Send + Sync + 'static>(&self) -> Option<&U> {
+            self.data.as_ref().and_then(|arc| arc.data_as_any().downcast_ref::<U>())
+        }
         fn object_data(&self) -> Option<&Arc<dyn ObjectData>> {
             self.data.as_ref()
         }
         fn backend(&self) -> &WeakBackend {
             &self.backend
+        }
+        fn send_request(&self, req: Self::Request<'_>) -> Result<(), InvalidId> {
+            let conn = Connection::from_backend(self.backend.upgrade().ok_or(InvalidId)?);
+            let id = conn.send_request(self, req, None)?;
+            debug_assert!(id.is_null());
+            Ok(())
+        }
+        fn send_constructor<I: Proxy>(
+            &self,
+            req: Self::Request<'_>,
+            data: Arc<dyn ObjectData>,
+        ) -> Result<I, InvalidId> {
+            let conn = Connection::from_backend(self.backend.upgrade().ok_or(InvalidId)?);
+            let id = conn.send_request(self, req, Some(data))?;
+            Proxy::from_id(&conn, id)
         }
         #[inline]
         fn from_id(conn: &Connection, id: ObjectId) -> Result<Self, InvalidId> {
@@ -254,10 +245,7 @@ pub mod wl_display {
             conn: &Connection,
             msg: Self::Request<'a>,
         ) -> Result<
-            (
-                Message<ObjectId, std::os::unix::io::BorrowedFd<'a>>,
-                Option<(&'static Interface, u32)>,
-            ),
+            (Message<ObjectId, std::os::unix::io::BorrowedFd<'a>>, Option<(&'static Interface, u32)>),
             InvalidId,
         > {
             match msg {
@@ -292,14 +280,14 @@ pub mod wl_display {
     impl WlDisplay {
         #[doc = "asynchronous roundtrip\n\nThe sync request asks the server to emit the 'done' event\non the returned wl_callback object.  Since requests are\nhandled in-order and events are delivered in-order, this can\nbe used as a barrier to ensure all previous requests and the\nresulting events have been handled.\n\nThe object returned by this request will be destroyed by the\ncompositor after the callback is fired and as such the client must not\nattempt to use it after that point.\n\nThe callback_data passed in the callback is the event serial."]
         #[allow(clippy::too_many_arguments)]
-        pub fn sync<U, D: 'static>(
+        pub fn sync<
+            U: Send + Sync + 'static,
+            D: Dispatch<super::wl_callback::WlCallback, U> + 'static,
+        >(
             &self,
             qh: &QueueHandle<D>,
             udata: U,
-        ) -> super::wl_callback::WlCallback
-        where
-            U: Dispatch<super::wl_callback::WlCallback, D> + Send + Sync + 'static,
-        {
+        ) -> super::wl_callback::WlCallback {
             self.send_constructor(
                 Request::Sync {},
                 qh.make_data::<super::wl_callback::WlCallback, U>(udata),
@@ -308,14 +296,14 @@ pub mod wl_display {
         }
         #[doc = "get global registry object\n\nThis request creates a registry object that allows the client\nto list and bind the global objects available from the\ncompositor.\n\nIt should be noted that the server side resources consumed in\nresponse to a get_registry request can only be released when the\nclient disconnects, not when the client side proxy is destroyed.\nTherefore, clients should invoke get_registry as infrequently as\npossible to avoid wasting memory."]
         #[allow(clippy::too_many_arguments)]
-        pub fn get_registry<U, D: 'static>(
+        pub fn get_registry<
+            U: Send + Sync + 'static,
+            D: Dispatch<super::wl_registry::WlRegistry, U> + 'static,
+        >(
             &self,
             qh: &QueueHandle<D>,
             udata: U,
-        ) -> super::wl_registry::WlRegistry
-        where
-            U: Dispatch<super::wl_registry::WlRegistry, D> + Send + Sync + 'static,
-        {
+        ) -> super::wl_registry::WlRegistry {
             self.send_constructor(
                 Request::GetRegistry {},
                 qh.make_data::<super::wl_registry::WlRegistry, U>(udata),
@@ -328,13 +316,13 @@ pub mod wl_display {
 pub mod wl_registry {
     use super::wayland_client::{
         backend::{
-            protocol::{same_interface, Argument, Interface, Message},
+            protocol::{same_interface, Argument, Interface, Message, WEnum},
             smallvec, Backend, InvalidId, ObjectData, ObjectId, WeakBackend,
         },
         Connection, Dispatch, DispatchError, Proxy, QueueHandle, QueueProxyData, Weak,
     };
-    use std::os::unix::io::OwnedFd;
     use std::sync::Arc;
+    use std::os::unix::io::OwnedFd;
     #[doc = r" The minimal object version supporting this request"]
     pub const REQ_BIND_SINCE: u32 = 1u32;
     #[doc = r" The wire opcode for this request"]
@@ -443,11 +431,30 @@ pub mod wl_registry {
         fn version(&self) -> u32 {
             self.version
         }
+        #[inline]
+        fn data<U: Send + Sync + 'static>(&self) -> Option<&U> {
+            self.data.as_ref().and_then(|arc| arc.data_as_any().downcast_ref::<U>())
+        }
         fn object_data(&self) -> Option<&Arc<dyn ObjectData>> {
             self.data.as_ref()
         }
         fn backend(&self) -> &WeakBackend {
             &self.backend
+        }
+        fn send_request(&self, req: Self::Request<'_>) -> Result<(), InvalidId> {
+            let conn = Connection::from_backend(self.backend.upgrade().ok_or(InvalidId)?);
+            let id = conn.send_request(self, req, None)?;
+            debug_assert!(id.is_null());
+            Ok(())
+        }
+        fn send_constructor<I: Proxy>(
+            &self,
+            req: Self::Request<'_>,
+            data: Arc<dyn ObjectData>,
+        ) -> Result<I, InvalidId> {
+            let conn = Connection::from_backend(self.backend.upgrade().ok_or(InvalidId)?);
+            let id = conn.send_request(self, req, Some(data))?;
+            Proxy::from_id(&conn, id)
         }
         #[inline]
         fn from_id(conn: &Connection, id: ObjectId) -> Result<Self, InvalidId> {
@@ -519,10 +526,7 @@ pub mod wl_registry {
             conn: &Connection,
             msg: Self::Request<'a>,
         ) -> Result<
-            (
-                Message<ObjectId, std::os::unix::io::BorrowedFd<'a>>,
-                Option<(&'static Interface, u32)>,
-            ),
+            (Message<ObjectId, std::os::unix::io::BorrowedFd<'a>>, Option<(&'static Interface, u32)>),
             InvalidId,
         > {
             match msg {
@@ -547,16 +551,13 @@ pub mod wl_registry {
     impl WlRegistry {
         #[doc = "bind an object to the display\n\nBinds a new, client-created object to the server using the\nspecified name as the identifier."]
         #[allow(clippy::too_many_arguments)]
-        pub fn bind<I: Proxy + 'static, U, D: 'static>(
+        pub fn bind<I: Proxy + 'static, U: Send + Sync + 'static, D: Dispatch<I, U> + 'static>(
             &self,
             name: u32,
             version: u32,
             qh: &QueueHandle<D>,
             udata: U,
-        ) -> I
-        where
-            U: Dispatch<I, D> + Send + Sync + 'static,
-        {
+        ) -> I {
             self.send_constructor(
                 Request::Bind { name, id: (I::interface(), version) },
                 qh.make_data::<I, U>(udata),
@@ -569,13 +570,13 @@ pub mod wl_registry {
 pub mod wl_callback {
     use super::wayland_client::{
         backend::{
-            protocol::{same_interface, Argument, Interface, Message},
+            protocol::{same_interface, Argument, Interface, Message, WEnum},
             smallvec, Backend, InvalidId, ObjectData, ObjectId, WeakBackend,
         },
         Connection, Dispatch, DispatchError, Proxy, QueueHandle, QueueProxyData, Weak,
     };
-    use std::os::unix::io::OwnedFd;
     use std::sync::Arc;
+    use std::os::unix::io::OwnedFd;
     #[doc = r" The minimal object version supporting this event"]
     pub const EVT_DONE_SINCE: u32 = 1u32;
     #[doc = r" The wire opcode for this event"]
@@ -658,11 +659,30 @@ pub mod wl_callback {
         fn version(&self) -> u32 {
             self.version
         }
+        #[inline]
+        fn data<U: Send + Sync + 'static>(&self) -> Option<&U> {
+            self.data.as_ref().and_then(|arc| arc.data_as_any().downcast_ref::<U>())
+        }
         fn object_data(&self) -> Option<&Arc<dyn ObjectData>> {
             self.data.as_ref()
         }
         fn backend(&self) -> &WeakBackend {
             &self.backend
+        }
+        fn send_request(&self, req: Self::Request<'_>) -> Result<(), InvalidId> {
+            let conn = Connection::from_backend(self.backend.upgrade().ok_or(InvalidId)?);
+            let id = conn.send_request(self, req, None)?;
+            debug_assert!(id.is_null());
+            Ok(())
+        }
+        fn send_constructor<I: Proxy>(
+            &self,
+            req: Self::Request<'_>,
+            data: Arc<dyn ObjectData>,
+        ) -> Result<I, InvalidId> {
+            let conn = Connection::from_backend(self.backend.upgrade().ok_or(InvalidId)?);
+            let id = conn.send_request(self, req, Some(data))?;
+            Proxy::from_id(&conn, id)
         }
         #[inline]
         fn from_id(conn: &Connection, id: ObjectId) -> Result<Self, InvalidId> {
@@ -708,10 +728,7 @@ pub mod wl_callback {
             conn: &Connection,
             msg: Self::Request<'a>,
         ) -> Result<
-            (
-                Message<ObjectId, std::os::unix::io::BorrowedFd<'a>>,
-                Option<(&'static Interface, u32)>,
-            ),
+            (Message<ObjectId, std::os::unix::io::BorrowedFd<'a>>, Option<(&'static Interface, u32)>),
             InvalidId,
         > {
             match msg {
@@ -724,13 +741,13 @@ pub mod wl_callback {
 pub mod test_global {
     use super::wayland_client::{
         backend::{
-            protocol::{same_interface, Argument, Interface, Message},
+            protocol::{same_interface, Argument, Interface, Message, WEnum},
             smallvec, Backend, InvalidId, ObjectData, ObjectId, WeakBackend,
         },
         Connection, Dispatch, DispatchError, Proxy, QueueHandle, QueueProxyData, Weak,
     };
-    use std::os::unix::io::OwnedFd;
     use std::sync::Arc;
+    use std::os::unix::io::OwnedFd;
     #[doc = r" The minimal object version supporting this request"]
     pub const REQ_MANY_ARGS_SINCE: u32 = 1u32;
     #[doc = r" The wire opcode for this request"]
@@ -902,11 +919,30 @@ pub mod test_global {
         fn version(&self) -> u32 {
             self.version
         }
+        #[inline]
+        fn data<U: Send + Sync + 'static>(&self) -> Option<&U> {
+            self.data.as_ref().and_then(|arc| arc.data_as_any().downcast_ref::<U>())
+        }
         fn object_data(&self) -> Option<&Arc<dyn ObjectData>> {
             self.data.as_ref()
         }
         fn backend(&self) -> &WeakBackend {
             &self.backend
+        }
+        fn send_request(&self, req: Self::Request<'_>) -> Result<(), InvalidId> {
+            let conn = Connection::from_backend(self.backend.upgrade().ok_or(InvalidId)?);
+            let id = conn.send_request(self, req, None)?;
+            debug_assert!(id.is_null());
+            Ok(())
+        }
+        fn send_constructor<I: Proxy>(
+            &self,
+            req: Self::Request<'_>,
+            data: Arc<dyn ObjectData>,
+        ) -> Result<I, InvalidId> {
+            let conn = Connection::from_backend(self.backend.upgrade().ok_or(InvalidId)?);
+            let id = conn.send_request(self, req, Some(data))?;
+            Proxy::from_id(&conn, id)
         }
         #[inline]
         fn from_id(conn: &Connection, id: ObjectId) -> Result<Self, InvalidId> {
@@ -1056,10 +1092,7 @@ pub mod test_global {
             conn: &Connection,
             msg: Self::Request<'a>,
         ) -> Result<
-            (
-                Message<ObjectId, std::os::unix::io::BorrowedFd<'a>>,
-                Option<(&'static Interface, u32)>,
-            ),
+            (Message<ObjectId, std::os::unix::io::BorrowedFd<'a>>, Option<(&'static Interface, u32)>),
             InvalidId,
         > {
             match msg {
@@ -1193,14 +1226,14 @@ pub mod test_global {
             );
         }
         #[allow(clippy::too_many_arguments)]
-        pub fn get_secondary<U, D: 'static>(
+        pub fn get_secondary<
+            U: Send + Sync + 'static,
+            D: Dispatch<super::secondary::Secondary, U> + 'static,
+        >(
             &self,
             qh: &QueueHandle<D>,
             udata: U,
-        ) -> super::secondary::Secondary
-        where
-            U: Dispatch<super::secondary::Secondary, D> + Send + Sync + 'static,
-        {
+        ) -> super::secondary::Secondary {
             self.send_constructor(
                 Request::GetSecondary {},
                 qh.make_data::<super::secondary::Secondary, U>(udata),
@@ -1208,14 +1241,14 @@ pub mod test_global {
             .unwrap_or_else(|_| Proxy::inert(self.backend.clone()))
         }
         #[allow(clippy::too_many_arguments)]
-        pub fn get_tertiary<U, D: 'static>(
+        pub fn get_tertiary<
+            U: Send + Sync + 'static,
+            D: Dispatch<super::tertiary::Tertiary, U> + 'static,
+        >(
             &self,
             qh: &QueueHandle<D>,
             udata: U,
-        ) -> super::tertiary::Tertiary
-        where
-            U: Dispatch<super::tertiary::Tertiary, D> + Send + Sync + 'static,
-        {
+        ) -> super::tertiary::Tertiary {
             self.send_constructor(
                 Request::GetTertiary {},
                 qh.make_data::<super::tertiary::Tertiary, U>(udata),
@@ -1270,16 +1303,16 @@ pub mod test_global {
         }
         #[doc = "a newid request that also takes allow null arg"]
         #[allow(clippy::too_many_arguments)]
-        pub fn newid_and_allow_null<U, D: 'static>(
+        pub fn newid_and_allow_null<
+            U: Send + Sync + 'static,
+            D: Dispatch<super::quad::Quad, U> + 'static,
+        >(
             &self,
             sec: Option<&super::secondary::Secondary>,
             ter: &super::tertiary::Tertiary,
             qh: &QueueHandle<D>,
             udata: U,
-        ) -> super::quad::Quad
-        where
-            U: Dispatch<super::quad::Quad, D> + Send + Sync + 'static,
-        {
+        ) -> super::quad::Quad {
             self.send_constructor(
                 Request::NewidAndAllowNull { sec: sec.cloned(), ter: ter.clone() },
                 qh.make_data::<super::quad::Quad, U>(udata),
@@ -1291,13 +1324,13 @@ pub mod test_global {
 pub mod secondary {
     use super::wayland_client::{
         backend::{
-            protocol::{same_interface, Argument, Interface, Message},
+            protocol::{same_interface, Argument, Interface, Message, WEnum},
             smallvec, Backend, InvalidId, ObjectData, ObjectId, WeakBackend,
         },
         Connection, Dispatch, DispatchError, Proxy, QueueHandle, QueueProxyData, Weak,
     };
-    use std::os::unix::io::OwnedFd;
     use std::sync::Arc;
+    use std::os::unix::io::OwnedFd;
     #[doc = r" The minimal object version supporting this request"]
     pub const REQ_DESTROY_SINCE: u32 = 2u32;
     #[doc = r" The wire opcode for this request"]
@@ -1375,11 +1408,30 @@ pub mod secondary {
         fn version(&self) -> u32 {
             self.version
         }
+        #[inline]
+        fn data<U: Send + Sync + 'static>(&self) -> Option<&U> {
+            self.data.as_ref().and_then(|arc| arc.data_as_any().downcast_ref::<U>())
+        }
         fn object_data(&self) -> Option<&Arc<dyn ObjectData>> {
             self.data.as_ref()
         }
         fn backend(&self) -> &WeakBackend {
             &self.backend
+        }
+        fn send_request(&self, req: Self::Request<'_>) -> Result<(), InvalidId> {
+            let conn = Connection::from_backend(self.backend.upgrade().ok_or(InvalidId)?);
+            let id = conn.send_request(self, req, None)?;
+            debug_assert!(id.is_null());
+            Ok(())
+        }
+        fn send_constructor<I: Proxy>(
+            &self,
+            req: Self::Request<'_>,
+            data: Arc<dyn ObjectData>,
+        ) -> Result<I, InvalidId> {
+            let conn = Connection::from_backend(self.backend.upgrade().ok_or(InvalidId)?);
+            let id = conn.send_request(self, req, Some(data))?;
+            Proxy::from_id(&conn, id)
         }
         #[inline]
         fn from_id(conn: &Connection, id: ObjectId) -> Result<Self, InvalidId> {
@@ -1414,10 +1466,7 @@ pub mod secondary {
             conn: &Connection,
             msg: Self::Request<'a>,
         ) -> Result<
-            (
-                Message<ObjectId, std::os::unix::io::BorrowedFd<'a>>,
-                Option<(&'static Interface, u32)>,
-            ),
+            (Message<ObjectId, std::os::unix::io::BorrowedFd<'a>>, Option<(&'static Interface, u32)>),
             InvalidId,
         > {
             match msg {
@@ -1445,13 +1494,13 @@ pub mod secondary {
 pub mod tertiary {
     use super::wayland_client::{
         backend::{
-            protocol::{same_interface, Argument, Interface, Message},
+            protocol::{same_interface, Argument, Interface, Message, WEnum},
             smallvec, Backend, InvalidId, ObjectData, ObjectId, WeakBackend,
         },
         Connection, Dispatch, DispatchError, Proxy, QueueHandle, QueueProxyData, Weak,
     };
-    use std::os::unix::io::OwnedFd;
     use std::sync::Arc;
+    use std::os::unix::io::OwnedFd;
     #[doc = r" The minimal object version supporting this request"]
     pub const REQ_DESTROY_SINCE: u32 = 3u32;
     #[doc = r" The wire opcode for this request"]
@@ -1529,11 +1578,30 @@ pub mod tertiary {
         fn version(&self) -> u32 {
             self.version
         }
+        #[inline]
+        fn data<U: Send + Sync + 'static>(&self) -> Option<&U> {
+            self.data.as_ref().and_then(|arc| arc.data_as_any().downcast_ref::<U>())
+        }
         fn object_data(&self) -> Option<&Arc<dyn ObjectData>> {
             self.data.as_ref()
         }
         fn backend(&self) -> &WeakBackend {
             &self.backend
+        }
+        fn send_request(&self, req: Self::Request<'_>) -> Result<(), InvalidId> {
+            let conn = Connection::from_backend(self.backend.upgrade().ok_or(InvalidId)?);
+            let id = conn.send_request(self, req, None)?;
+            debug_assert!(id.is_null());
+            Ok(())
+        }
+        fn send_constructor<I: Proxy>(
+            &self,
+            req: Self::Request<'_>,
+            data: Arc<dyn ObjectData>,
+        ) -> Result<I, InvalidId> {
+            let conn = Connection::from_backend(self.backend.upgrade().ok_or(InvalidId)?);
+            let id = conn.send_request(self, req, Some(data))?;
+            Proxy::from_id(&conn, id)
         }
         #[inline]
         fn from_id(conn: &Connection, id: ObjectId) -> Result<Self, InvalidId> {
@@ -1568,10 +1636,7 @@ pub mod tertiary {
             conn: &Connection,
             msg: Self::Request<'a>,
         ) -> Result<
-            (
-                Message<ObjectId, std::os::unix::io::BorrowedFd<'a>>,
-                Option<(&'static Interface, u32)>,
-            ),
+            (Message<ObjectId, std::os::unix::io::BorrowedFd<'a>>, Option<(&'static Interface, u32)>),
             InvalidId,
         > {
             match msg {
@@ -1599,13 +1664,13 @@ pub mod tertiary {
 pub mod quad {
     use super::wayland_client::{
         backend::{
-            protocol::{same_interface, Argument, Interface, Message},
+            protocol::{same_interface, Argument, Interface, Message, WEnum},
             smallvec, Backend, InvalidId, ObjectData, ObjectId, WeakBackend,
         },
         Connection, Dispatch, DispatchError, Proxy, QueueHandle, QueueProxyData, Weak,
     };
-    use std::os::unix::io::OwnedFd;
     use std::sync::Arc;
+    use std::os::unix::io::OwnedFd;
     #[doc = r" The minimal object version supporting this request"]
     pub const REQ_DESTROY_SINCE: u32 = 3u32;
     #[doc = r" The wire opcode for this request"]
@@ -1683,11 +1748,30 @@ pub mod quad {
         fn version(&self) -> u32 {
             self.version
         }
+        #[inline]
+        fn data<U: Send + Sync + 'static>(&self) -> Option<&U> {
+            self.data.as_ref().and_then(|arc| arc.data_as_any().downcast_ref::<U>())
+        }
         fn object_data(&self) -> Option<&Arc<dyn ObjectData>> {
             self.data.as_ref()
         }
         fn backend(&self) -> &WeakBackend {
             &self.backend
+        }
+        fn send_request(&self, req: Self::Request<'_>) -> Result<(), InvalidId> {
+            let conn = Connection::from_backend(self.backend.upgrade().ok_or(InvalidId)?);
+            let id = conn.send_request(self, req, None)?;
+            debug_assert!(id.is_null());
+            Ok(())
+        }
+        fn send_constructor<I: Proxy>(
+            &self,
+            req: Self::Request<'_>,
+            data: Arc<dyn ObjectData>,
+        ) -> Result<I, InvalidId> {
+            let conn = Connection::from_backend(self.backend.upgrade().ok_or(InvalidId)?);
+            let id = conn.send_request(self, req, Some(data))?;
+            Proxy::from_id(&conn, id)
         }
         #[inline]
         fn from_id(conn: &Connection, id: ObjectId) -> Result<Self, InvalidId> {
@@ -1722,10 +1806,7 @@ pub mod quad {
             conn: &Connection,
             msg: Self::Request<'a>,
         ) -> Result<
-            (
-                Message<ObjectId, std::os::unix::io::BorrowedFd<'a>>,
-                Option<(&'static Interface, u32)>,
-            ),
+            (Message<ObjectId, std::os::unix::io::BorrowedFd<'a>>, Option<(&'static Interface, u32)>),
             InvalidId,
         > {
             match msg {
